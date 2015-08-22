@@ -1,11 +1,10 @@
 #!/bin/bash
 
 if [ -z "$DIGITALOCEAN_ACCESS_TOKEN" ]; then echo "DIGITALOCEAN_ACCESS_TOKEN is unset"; exit; fi
+if [ -z "$DIGITALOCEAN_SIZE" ]; then export DIGITALOCEAN_SIZE=1gb; fi
+if [ -z "$DIGITALOCEAN_REGION" ]; then export DIGITALOCEAN_REGION=sfo1; fi
 
 # getopts
-
-export DIGITALOCEAN_SIZE=1gb
-export DIGITALOCEAN_REGION=sfo1
 
 # Make sure the swarm image is installed locally
 docker pull swarm
