@@ -1,0 +1,443 @@
+{
+  "Description": "A simple Docker Swarm cluster on Etcd. No overlay networking. Single manager. Single VPC, subnet, availability zone.",
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Parameters": {
+    "NamePrefix": {
+      "Description": "Prefix for resource Name tags.",
+      "Type": "String",
+      "Default": "Swarm-"
+    },
+    "AvailabilityZone": {
+      "Description": "The target availability zone.",
+      "Type": "String",
+      "MaxLength": "1",
+      "MinLength": "0",
+      "AllowedPattern": "^[a-z]+$",
+      "Default": "a"
+    },
+    "ClusterName": {
+      "Description": "Name of the Swarm cluster.",
+      "Type": "String",
+      "Default": "default"
+    },
+    "KeyName": {
+      "Description": "Name of the SSH KeyPair.",
+      "Type": "String",
+      "Default": ""
+    },
+    "ManagerInstanceType": {
+      "Description": "The instance type to use for the manager node.",
+      "Type": "String",
+      "Default": "m3.medium"
+    },
+    "EtcdInstanceType": {
+      "Description": "The instance type to use for the etcd node.",
+      "Type": "String",
+      "Default": "m3.xlarge"
+    },
+    "NodeInstanceType": {
+      "Description": "The instance type to use for nodes.",
+      "Type": "String",
+      "Default": "m3.medium"
+    },
+    "EtcdAMI": {
+      "Description": "The AMI to use for the etcd node.",
+      "Type": "String",
+      "Default": ""
+    },
+    "NodeAMI": {
+      "Description": "The AMI to use for all nodes.",
+      "Type": "String",
+      "Default": ""
+    },
+    "NodeCount": {
+      "Description": "The number of nodes to create per cluster.",
+      "Type": "String",
+      "Default": "2"
+    }
+
+  },
+  "Outputs": {},
+  "Mappings": {
+    "Parameters": {
+      "StackCreationTimeout": {
+        "default": "PT30M"
+      }
+    }
+  },
+  "Resources": {
+    "Vpc": {
+      "Type": "AWS::EC2::VPC",
+      "Properties": {
+        "EnableDnsHostnames": "true",
+        "EnableDnsSupport": "true",
+        "CidrBlock": "10.0.0.0/16",
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": { "Fn::Join": [ "-", [{ "Ref":"NamePrefix" }, "VPC"] ] }
+          },
+          {
+            "Value": {
+              "Ref": "AWS::StackName"
+            },
+            "Key": "Application"
+          },
+          {
+            "Value": "Public",
+            "Key": "Network"
+          }
+        ]
+      }
+    },
+    "InternetGateway": {
+      "DependsOn": "Vpc",
+      "Type": "AWS::EC2::InternetGateway",
+      "Properties": {
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": { "Fn::Join": [ "", [{ "Ref":"NamePrefix" }, "IG"] ] }
+          },
+          {
+            "Value": {
+              "Ref": "AWS::StackName"
+            },
+            "Key": "Application"
+          },
+          {
+            "Value": "Public",
+            "Key": "Network"
+          }
+        ]
+      }
+    },
+    "GatewayToInternet": {
+      "DependsOn": "InternetGateway",
+      "Type": "AWS::EC2::VPCGatewayAttachment",
+      "Properties": {
+        "VpcId": {
+          "Ref": "Vpc"
+        },
+        "InternetGatewayId": {
+          "Ref": "InternetGateway"
+        }
+      }
+    },
+
+    "PublicSubnet": {
+      "Type": "AWS::EC2::Subnet",
+      "Properties": {
+        "VpcId": { "Ref": "Vpc" },
+        "AvailabilityZone": { "Fn::Join": [ "", [ { "Ref": "AWS::Region" }, { "Ref": "AvailabilityZone" } ] ] },
+        "MapPublicIpOnLaunch": "true",
+        "CidrBlock": "10.0.0.0/17",
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": { "Fn::Join": [ "", [{ "Ref":"NamePrefix" }, "PublicSubnet"] ] }
+          },
+          {
+            "Value": {
+              "Ref": "AWS::StackName"
+            },
+            "Key": "Application"
+          },
+          {
+            "Value": "Public",
+            "Key": "Network"
+          }
+        ]
+      }
+    },
+
+    "PublicRouteTable": {
+      "Type": "AWS::EC2::RouteTable",
+      "Properties": {
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": { "Fn::Join": [ "", [{ "Ref":"NamePrefix" }, "PublicRoutes"] ] }
+          },
+          {
+            "Value": {
+              "Ref": "AWS::StackName"
+            },
+            "Key": "Application"
+          },
+          {
+            "Value": "Public",
+            "Key": "Network"
+          }
+        ],
+        "VpcId": {
+          "Ref": "Vpc"
+        }
+      }
+    },
+
+    "PublicRoute": {
+      "DependsOn": "GatewayToInternet",
+      "Type": "AWS::EC2::Route",
+      "Properties": {
+        "DestinationCidrBlock": "0.0.0.0\/0",
+        "GatewayId": {
+          "Ref": "InternetGateway"
+        },
+        "RouteTableId": {
+          "Ref": "PublicRouteTable"
+        }
+      }
+    },
+
+    "PublicSubnetRouteTableAssociation": {
+      "Type": "AWS::EC2::SubnetRouteTableAssociation",
+      "Properties": {
+        "SubnetId": {
+          "Ref": "PublicSubnet"
+        },
+        "RouteTableId": {
+          "Ref": "PublicRouteTable"
+        }
+      }
+    },
+
+    "InfraSecurityGroup": {
+      "Type": "AWS::EC2::SecurityGroup",
+      "Properties": {
+        "GroupDescription": {
+          "Ref": "AWS::StackName"
+        },
+        "SecurityGroupEgress": [
+          {
+            "CidrIp": "0.0.0.0/0",
+            "FromPort": 0,
+            "IpProtocol": "tcp",
+            "ToPort": 65535
+          },
+          {
+            "CidrIp": "0.0.0.0/0",
+            "FromPort": 0,
+            "IpProtocol": "udp",
+            "ToPort": 65535
+          }
+        ],
+        "SecurityGroupIngress": [
+          {
+            "CidrIp": "0.0.0.0/0",
+            "FromPort": 3,
+            "IpProtocol": "icmp",
+            "ToPort": -1
+          },
+          {
+            "CidrIp": "0.0.0.0/0",
+            "FromPort": 22,
+            "IpProtocol": "tcp",
+            "ToPort": 22
+          },
+          {
+            "CidrIp": "10.0.0.0/16",
+            "FromPort": 0,
+            "IpProtocol": "tcp",
+            "ToPort": 65535
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "SwarmCluster",
+            "Value": {
+              "Ref": "ClusterName"
+            }
+          }
+        ],
+        "VpcId": {
+          "Ref": "Vpc"
+        }
+      }
+    },
+
+    "EtcdInterfaceA": {
+      "Type" : "AWS::EC2::NetworkInterface",
+      "DependsOn": "GatewayToInternet",
+      "Properties" : {
+        "Description" : "Private IP for the Etcd cluster.",
+        "GroupSet" : [ { "Ref": "InfraSecurityGroup" } ],
+        "PrivateIpAddress" : "10.0.0.10",
+        "SubnetId" : { "Ref": "PublicSubnet" },
+        "Tags": [
+          {
+            "Key": "SwarmCluster",
+            "Value": { "Ref": "ClusterName" }
+          },
+          {
+            "Key": "Name",
+            "Value": { "Fn::Join": [ "-", [{ "Ref":"NamePrefix" }, "etcd-interfaceA"]}
+          }
+        ]
+      }
+    },
+    "EtcdInstanceA": {
+      "Type": "AWS::EC2::Instance",
+      "DependsOn" : ["GatewayToInternet", "EtcdInterfaceA"],
+      "Properties": {
+        "ImageId": "ami-b909ead9",
+        "InstanceType": { "Ref": "EtcdInstanceType" },
+        "KeyName": { "Ref": "KeyName" },
+        "AvailabilityZone": { "Fn::Join": [ "", [ { "Ref": "AWS::Region" }, { "Ref": "AvailabilityZone" } ] ] },
+        "BlockDeviceMappings": [
+          {
+            "DeviceName": "/dev/xvda",
+            "Ebs": { "VolumeSize": "30", "VolumeType": "gp2" }
+          }
+        ],
+        "NetworkInterfaces": [
+          {"NetworkInterfaceId": { "Ref":"EtcdInterfaceA" }, "DeviceIndex": "0" }
+        ],
+        "Tags": [
+          {
+            "Key": "SwarmCluster",
+            "Value": { "Ref": "ClusterName" }
+          },
+          {
+            "Key": "Name",
+            "Value": { "Fn::Join": [ "-", [{ "Ref":"NamePrefix" }, "etcdA"]}
+          }
+        ],
+        "UserData": {
+          "Fn::Base64": {
+            "Fn::Join": [
+              "",
+              [
+                "#!/bin/sh\n",
+                "sudo docker -H unix:///var/run/docker.sock run -d --restart always -p 2380:2380 -p 2379:2379 --name etcd quay.io/coreos/etcd:v2.2.1 -name etcd0 -advertise-client-urls http://10.0.0.10:2379 -listen-client-urls http://0.0.0.0:2379 -initial-advertise-peer-urls http://10.0.0.10:2380 -listen-peer-urls http://0.0.0.0:2380 -initial-cluster-token etcd-cluster-1 -initial-cluster etcd0=http://10.0.0.10:2380 -initial-cluster-state new\n"
+              ]
+            ]
+          }
+        }
+      }
+    },
+
+    "ManagerInterfaceA": {
+      "Type" : "AWS::EC2::NetworkInterface",
+      "DependsOn": "GatewayToInternet",
+      "Properties" : {
+        "Description" : "Private IP for the Swarm cluster manager.",
+        "GroupSet" : [ { "Ref": "InfraSecurityGroup" } ],
+        "PrivateIpAddress" : "10.0.0.20",
+        "SubnetId" : { "Ref": "PublicSubnet" },
+        "Tags": [
+          {
+            "Key": "SwarmCluster",
+            "Value": { "Ref": "ClusterName" }
+          },
+          {
+            "Key": "Name",
+            "Value": { "Fn::Join": [ "-", [{ "Ref":"NamePrefix" }, "manager-interface-a"]}
+          }
+        ]
+      }
+    },
+    "ManagerInstanceA": {
+      "Type": "AWS::EC2::Instance",
+      "DependsOn" : ["GatewayToInternet", "EtcdInstanceA", "ManagerInterfaceA"],
+      "Properties": {
+        "ImageId": { "Ref": "NodeAMI" },
+        "InstanceType": { "Ref": "ManagerInstanceType" },
+        "KeyName": { "Ref": "KeyName" },
+        "AvailabilityZone": { "Fn::Join": [ "", [ { "Ref": "AWS::Region" }, { "Ref": "AvailabilityZone" } ] ] },
+        "BlockDeviceMappings": [
+          {
+            "DeviceName": "/dev/xvda",
+            "Ebs": { "VolumeSize": "30", "VolumeType": "gp2" }
+          }
+        ],
+        "NetworkInterfaces": [
+          {"NetworkInterfaceId": { "Ref":"ManagerInterfaceA" }, "DeviceIndex": "0" }
+        ],
+        "Tags": [
+          {
+            "Key": "SwarmCluster",
+            "Value": { "Ref": "ClusterName" }
+          },
+          {
+            "Key": "Name",
+            "Value": { "Fn::Join": [ "-", [{ "Ref":"NamePrefix" }, "manager-a"]}
+          }
+        ],
+        "UserData": {
+          "Fn::Base64": {
+            "Fn::Join": [
+              "",
+              [
+                "#!/bin/sh\n",
+                "sudo rm /etc/docker/key.json\n",
+                "sudo systemctl restart docker\n",
+                "while ! nc -w 1 10.0.0.10 2379 ; do sleep 1; echo Waiting for etcd to become available. ; done \n",
+                "sudo docker -H unix:///var/run/docker.sock run -d --name manager --restart always --net host dockerswarm/swarm:master manage -H  tcp://0.0.0.0:3376 --strategy spread --advertise $(curl http://169.254.169.254/latest/meta-data/local-ipv4):3376 etcd://10.0.0.10:2379\n",
+                "sudo docker -H unix:///var/run/docker.sock run -d --name meta-agent --restart always --net host dockerswarm/swarm:master join --advertise $(curl http://169.254.169.254/latest/meta-data/local-ipv4):3376 etcd://10.0.0.12:2379\n"
+              ]
+            ]
+          }
+        }
+      }
+    },
+
+    "NodeLC": {
+      "Type": "AWS::AutoScaling::LaunchConfiguration",
+      "Properties": {
+        "ImageId": { "Ref": "NodeAMI" },
+        "InstanceType": { "Ref": "NodeInstanceType" },
+        "SecurityGroups": [{ "Ref": "InfraSecurityGroup" }],
+        "KeyName": { "Ref": "KeyName" },
+        "BlockDeviceMappings": [
+          {
+            "DeviceName": "/dev/xvda",
+            "Ebs": { "VolumeSize": "30", "VolumeType": "gp2" }
+          }
+        ],
+        "UserData": {
+          "Fn::Base64": {
+            "Fn::Join": [
+              "",
+              [
+                "#!/bin/sh\n",
+                "while ! nc -w 1 10.0.0.10 2379 ; do sleep 1; echo Waiting for Etcd to become available. ; done \n",
+                "sudo rm /etc/docker/key.json\n",
+                "sudo systemctl restart docker\n",
+                "docker run -d --restart always --name swarm-agent dockerswarm/swarm:master join --advertise $(curl http://169.254.169.254/latest/meta-data/local-ipv4):2376 etcd://10.0.0.10:2379\n"
+              ]
+            ]
+          }
+        }
+      }
+    },
+    "NodeGroup": {
+      "Type": "AWS::AutoScaling::AutoScalingGroup",
+      "DependsOn" : ["GatewayToInternet", "EtcdInstanceA"],
+      "Properties": {
+        "AvailabilityZones": [ { "Fn::Join": [ "", [ { "Ref": "AWS::Region" }, { "Ref": "AvailabilityZone" } ] ] } ],
+        "DesiredCapacity": { "Ref": "NodeCount" },
+        "MaxSize": { "Ref": "NodeCount" },
+        "MinSize": { "Ref": "NodeCount" },
+        "HealthCheckGracePeriod": 600,
+        "HealthCheckType": "EC2",
+        "LaunchConfigurationName": { "Ref": "NodeLC" },
+        "VPCZoneIdentifier": [ { "Ref": "PublicSubnet" } ],
+        "Tags": [
+          {
+            "Key": "SwarmCluster",
+            "PropagateAtLaunch": "true",
+            "Value": { "Ref": "ClusterName" }
+          },
+          {
+            "Key": "Name",
+            "PropagateAtLaunch": "true",
+            "Value": "swarm-node-g1"
+            "Value": { "Fn::Join": [ "-", [{ "Ref":"NamePrefix" }, "node"]}
+          }
+        ]
+      }
+    }
+
+  }
+}
